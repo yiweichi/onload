@@ -891,6 +891,8 @@ void ci_netif_config_opts_getenv(ci_netif_config_opts* opts)
     opts->send_poll_thresh = atoi(s);
   if ( (s = getenv("EF_SEND_POLL_MAX_EVS")) )
     opts->send_poll_max_events = atoi(s);
+  if ( (s = getenv("EF_TX_ADVANCE_NAGLE_POLL")) )
+    opts->tx_advance_nagle_poll = atoi(s);
   if ( (s = getenv("EF_DEFER_WORK_LIMIT")) )
     opts->defer_work_limit = atoi(s);
   if( (s = getenv("EF_UDP_SEND_UNLOCK_THRESH")) )
