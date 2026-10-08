@@ -1860,7 +1860,10 @@ ci_tcp_send_fill_pkts(ci_netif* ni, ci_tcp_state* ts,
 static int ci_tcp_send_via_prequeue(ci_netif* ni, ci_tcp_state* ts,
                                     struct tcp_send_info* sinf)
 {
-  int queued = ci_tcp_tx_prequeue(ni, ts, sinf->fill_list);
+  int queued = 0, prq_ld = 0;
+  { ci_uint64 __t0 = oo_lat_enabled() ? oo_rdtsc() : 0;
+    queued = ci_tcp_tx_prequeue(ni, ts, sinf->fill_list);
+    if( __t0 ) OO_ADV_ACC(preq_txp, oo_rdtsc() - __t0); }
 
   if( ! queued ) {
     /* ! queued means that the connection was shut down, or closed, or
@@ -1873,7 +1876,10 @@ static int ci_tcp_send_via_prequeue(ci_netif* ni, ci_tcp_state* ts,
   }
 
   ci_assert_equal(sinf->stack_locked, 0);
-  if( ci_netif_lock_or_defer_work(ni, &ts->s.b) )
+  { ci_uint64 __t1 = oo_lat_enabled() ? oo_rdtsc() : 0;
+    prq_ld = ci_netif_lock_or_defer_work(ni, &ts->s.b);
+    if( __t1 ) OO_ADV_ACC(preq_ld, oo_rdtsc() - __t1); }
+  if( prq_ld )
     sinf->stack_locked = 1;
   return 1;
 }

@@ -11,6 +11,7 @@
 
 
 #include "ip_internal.h"
+#include "tcp_send_lat.h"
 #include <ci/tools/utils.h>
 #include <ci/efhw/device.h>
 #include <onload/cplane_ops.h>
@@ -904,7 +905,9 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
   ci_assert(!(w->sb_aflags & CI_SB_AFLAG_ORPHAN));
 
   if( ni->state->defer_work_count >= NI_OPTS(ni).defer_work_limit ) {
+    ci_uint64 __d1 = oo_lat_enabled() ? oo_rdtsc() : 0;
     int rc = ci_netif_lock(ni);
+    if( __d1 ) OO_ADV_ACC(ld_br1, oo_rdtsc() - __d1);
     if( rc == 0 ) {
       CITP_STATS_NETIF_INC(ni, defer_work_limited);
       citp_waitable_deferred_work(ni, w);
@@ -917,6 +920,7 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
   }
 
   if( ci_bit_test_and_set(&w->sb_aflags, CI_SB_AFLAG_DEFERRED_BIT) ) {
+    ci_uint64 __d2 = oo_lat_enabled() ? oo_rdtsc() : 0;
     /* Already set.  Another thread is trying to defer some work for this
      * socket.  However, we must do **our** work in time, so let's push it
      * forward.
@@ -930,6 +934,7 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
      * really rare, and it is simpler just to push on.
      */
     int rc = ci_netif_lock(ni);
+    if( __d2 ) OO_ADV_ACC(ld_br2, oo_rdtsc() - __d2);
     if( rc == 0 ) {
       /* We should not remove CI_SB_AFLAG_DEFERRED_BIT, because it was set
        * by someone else, and that someone else is responsible for
@@ -950,12 +955,14 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
     return 0;
   }
 
+  { ci_uint64 __d3 = oo_lat_enabled() ? oo_rdtsc() : 0;
   while( 1 ) {
     ci_uint64 new_v, v = ni->state->lock.lock;
     if( ! (v & CI_EPLOCK_LOCKED) ) {
       if( ci_netif_trylock(ni) ) {
         ci_bit_clear(&w->sb_aflags, CI_SB_AFLAG_DEFERRED_BIT);
         citp_waitable_deferred_work(ni, w);
+        if( __d3 ) OO_ADV_ACC(ld_br3, oo_rdtsc() - __d3);
         return 1;
       }
     }
@@ -964,9 +971,11 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
       new_v = (v & ~CI_EPLOCK_NETIF_SOCKET_LIST) | (W_ID(w) + 1);
       if( ci_cas64u_succeed(&ni->state->lock.lock, v, new_v) ) {
         ++ni->state->defer_work_count;
+        if( __d3 ) OO_ADV_ACC(ld_br3, oo_rdtsc() - __d3);
         return 0;
       }
     }
+  }
   }
 }
 
