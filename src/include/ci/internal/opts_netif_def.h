@@ -820,6 +820,13 @@ CI_CFG_OPT("EF_SEND_POLL_MAX_EVS", send_poll_max_events, ci_uint16,
 "number of events handled.",
            , , 96, 1, 65535, count)
 
+CI_CFG_OPT("EF_TX_ADVANCE_NAGLE_POLL", tx_advance_nagle_poll, ci_uint32,
+"Poll for network events when TCP transmit is stopped (e.g. by Nagle) "
+"at the end of ci_tcp_tx_advance(). "
+"Set to 0 to skip the trailing poll in the poll_and_out path "
+"to reduce send-path tail latency at the cost of deferred RX/ACK processing.",
+           , , 1, 0, 1, value)
+
 CI_CFG_OPT("EF_UDP_SEND_UNLOCK_THRESH", udp_send_unlock_thresh, ci_uint16,
 "UDP message size below which we attempt to take the stack lock early.  "
 "Taking the lock early reduces overhead and latency slightly, but may "

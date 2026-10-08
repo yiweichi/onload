@@ -110,8 +110,13 @@ typedef struct {
   ci_uint64 preq_txp;   /* ci_tcp_tx_prequeue (CAS link) */
   ci_uint64 preq_ld;    /* ci_netif_lock_or_defer_work (wait/defer) */
   ci_uint64 ld_br1;     /* lock_or_defer branch1: defer_work_limit hit, ci_netif_lock */
+  ci_uint64 ld_br1_work;/* br1: citp_waitable_deferred_work while holding lock */
   ci_uint64 ld_br2;     /* lock_or_defer branch2: DEFERRED_BIT already set, ci_netif_lock */
+  ci_uint64 ld_br2_work;/* br2: citp_waitable_deferred_work while holding lock */
   ci_uint64 ld_br3;     /* lock_or_defer branch3: primary trylock/CAS path */
+  ci_uint64 ld_br3_work;/* br3 trylock-hit: deferred_work while holding lock */
+  ci_uint64 ld_entry;   /* entry checks: limit load + test_and_set */
+  ci_uint64 ld_total;   /* whole ci_netif_lock_or_defer_work */
 } oo_adv_lat_t;
 extern __thread oo_adv_lat_t oo_adv_tls;
 #define OO_ADV_ACC(_f, _cyc) do { oo_adv_tls._f += (_cyc); } while(0)
@@ -192,8 +197,13 @@ typedef struct {
         unsigned long long __pt = oo_cyc_to_ns(oo_adv_tls.preq_txp); \
         unsigned long long __pl = oo_cyc_to_ns(oo_adv_tls.preq_ld); \
         unsigned long long __b1 = oo_cyc_to_ns(oo_adv_tls.ld_br1); \
+        unsigned long long __b1w = oo_cyc_to_ns(oo_adv_tls.ld_br1_work); \
         unsigned long long __b2 = oo_cyc_to_ns(oo_adv_tls.ld_br2); \
+        unsigned long long __b2w = oo_cyc_to_ns(oo_adv_tls.ld_br2_work); \
         unsigned long long __b3 = oo_cyc_to_ns(oo_adv_tls.ld_br3); \
+        unsigned long long __b3w = oo_cyc_to_ns(oo_adv_tls.ld_br3_work); \
+        unsigned long long __lde = oo_cyc_to_ns(oo_adv_tls.ld_entry); \
+        unsigned long long __ldt = oo_cyc_to_ns(oo_adv_tls.ld_total); \
         unsigned long long __un = oo_cyc_to_ns(__lat.s_unlock); \
         unsigned long long __rs = oo_cyc_to_ns(oo_adv_tls.adv_resync); \
         unsigned long long __hd = oo_cyc_to_ns(oo_adv_tls.adv_hdr); \
@@ -221,7 +231,7 @@ typedef struct {
           "  |  |-resync=%lluns hdr=%lluns push=%lluns trailing_poll=%lluns\n" \
           "  |     |-poll_evq=%lluns poll_tmr=%lluns\n" \
           "  |-adv_direct=%lluns poll_main=%lluns(%d) prequeue=%lluns " \
-          "  [tx_prequeue=%lluns lock_defer=%lluns{br1=%lluns br2=%lluns br3=%lluns}] unlock=%lluns\n" \
+          "  [tx_prequeue=%lluns lock_defer=%lluns{br1=%lluns+work=%lluns br2=%lluns+work=%lluns br3=%lluns+work=%lluns entry=%lluns total=%lluns}] unlock=%lluns\n" \
           "  |-pkt_bufs: alloc=%d free=%d rx=%d tx_inuse=%d\n" \
           "  |-unaccounted(residual)=%lluns\n", \
                (_where), __tot_ns, (int)(_rc), \
@@ -229,7 +239,7 @@ typedef struct {
                __lat.lock_ok, __lat.via_prequeue, \
                __pro, oo_cyc_to_ns(__lat.s_trylock), __ss, __al, __lat.alloc_cnt, __fi, __en, __df, \
                __ft, __fl, __an, __rs, __hd, __pu, __ap, __ev, __tm, \
-               __ad, __po, __lat.poll_cnt, __pq, __pt, __pl, __b1, __b2, __b3, __un, \
+               __ad, __po, __lat.poll_cnt, __pq, __pt, __pl, __b1, __b1w, __b2, __b2w, __b3, __b3w, __lde, __ldt, __un, \
                __pb_alloc, __pb_free, __pb_rx, __pb_tx, __resid); } \
       } \
     } \

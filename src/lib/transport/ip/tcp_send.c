@@ -135,7 +135,8 @@ static void ci_tcp_tx_advance_nagle(ci_netif* ni, ci_tcp_state* ts)
   ++ts->stats.tx_stop_nagle;
 
  poll_and_out:
-  if( ci_netif_may_poll(ni) && ci_netif_has_event(ni) ) {
+  if( NI_OPTS(ni).tx_advance_nagle_poll &&
+      ci_netif_may_poll(ni) && ci_netif_has_event(ni) ) {
     ci_uint64 __q0 = oo_lat_enabled() ? oo_rdtsc() : 0;
     ci_netif_poll(ni);
     if( __q0 ) OO_ADV_ACC(adv_poll, oo_rdtsc() - __q0);
