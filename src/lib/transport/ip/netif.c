@@ -904,19 +904,19 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
    */
   ci_assert(!(w->sb_aflags & CI_SB_AFLAG_ORPHAN));
 
-  ci_uint64 __ldt0 = oo_lat_enabled() ? oo_rdtsc() : 0;
-  ci_uint64 __lde0 = __ldt0;
+  ci_uint64 __total = oo_lat_enabled() ? oo_rdtsc_serialized() : 0;
+  ci_uint64 __entry_start = __total;
   if( ni->state->defer_work_count >= NI_OPTS(ni).defer_work_limit ) {
-    if( __lde0 ) OO_ADV_ACC(ld_entry, oo_rdtsc() - __lde0);
-    ci_uint64 __d1 = oo_lat_enabled() ? oo_rdtsc() : 0;
+    if( __entry_start ) OO_ADV_ACC(entry, oo_rdtsc() - __entry_start);
+    ci_uint64 __br1 = oo_lat_enabled() ? oo_rdtsc() : 0;
     int rc = ci_netif_lock(ni);
-    if( __d1 ) OO_ADV_ACC(ld_br1, oo_rdtsc() - __d1);
+    if( __br1 ) OO_ADV_ACC(br1, oo_rdtsc() - __br1);
     if( rc == 0 ) {
       CITP_STATS_NETIF_INC(ni, defer_work_limited);
-      ci_uint64 __w1 = oo_lat_enabled() ? oo_rdtsc() : 0;
+      ci_uint64 __br1_work = oo_lat_enabled() ? oo_rdtsc() : 0;
       citp_waitable_deferred_work(ni, w);
-      if( __w1 ) OO_ADV_ACC(ld_br1_work, oo_rdtsc() - __w1);
-      if( __ldt0 ) OO_ADV_ACC(ld_total, oo_rdtsc() - __ldt0);
+      if( __br1_work ) OO_ADV_ACC(br1_work, oo_rdtsc() - __br1_work);
+      if( __total ) OO_ADV_ACC(total, oo_rdtsc() - __total);
       return 1;
     }
     /* We got a signal while waiting for the stack lock.  Best thing to do
@@ -925,11 +925,11 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
      */
   }
 
-  ci_uint64 __t0 = oo_lat_enabled() ? oo_rdtsc() : 0;
+  ci_uint64 __entry_tas = oo_lat_enabled() ? oo_rdtsc() : 0;
   int __was_set = ci_bit_test_and_set(&w->sb_aflags, CI_SB_AFLAG_DEFERRED_BIT);
-  if( __lde0 ) OO_ADV_ACC(ld_entry, oo_rdtsc() - __t0);
+  if( __entry_start ) OO_ADV_ACC(entry, oo_rdtsc() - __entry_tas);
   if( __was_set ) {
-    ci_uint64 __d2 = oo_lat_enabled() ? oo_rdtsc() : 0;
+    ci_uint64 __br2 = oo_lat_enabled() ? oo_rdtsc() : 0;
     /* Already set.  Another thread is trying to defer some work for this
      * socket.  However, we must do **our** work in time, so let's push it
      * forward.
@@ -943,15 +943,15 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
      * really rare, and it is simpler just to push on.
      */
     int rc = ci_netif_lock(ni);
-    if( __d2 ) OO_ADV_ACC(ld_br2, oo_rdtsc() - __d2);
+    if( __br2 ) OO_ADV_ACC(br2, oo_rdtsc() - __br2);
     if( rc == 0 ) {
       /* We should not remove CI_SB_AFLAG_DEFERRED_BIT, because it was set
        * by someone else, and that someone else is responsible for
        * removing. */
-      ci_uint64 __w2 = oo_lat_enabled() ? oo_rdtsc() : 0;
+      ci_uint64 __br2_work = oo_lat_enabled() ? oo_rdtsc() : 0;
       citp_waitable_deferred_work(ni, w);
-      if( __w2 ) OO_ADV_ACC(ld_br2_work, oo_rdtsc() - __w2);
-      if( __ldt0 ) OO_ADV_ACC(ld_total, oo_rdtsc() - __ldt0);
+      if( __br2_work ) OO_ADV_ACC(br2_work, oo_rdtsc() - __br2_work);
+      if( __total ) OO_ADV_ACC(total, oo_rdtsc() - __total);
       return 1;
     }
     /* We are interrupted by a signal.  We are in kernel.  Let's return and
@@ -964,21 +964,21 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
      */
     CITP_STATS_NETIF_INC(ni, defer_work_contended_unsafe);
     ++ni->state->defer_work_count;
-    if( __ldt0 ) OO_ADV_ACC(ld_total, oo_rdtsc() - __ldt0);
+    if( __total ) OO_ADV_ACC(total, oo_rdtsc() - __total);
     return 0;
   }
 
-  { ci_uint64 __d3 = oo_lat_enabled() ? oo_rdtsc() : 0;
+  { ci_uint64 __br3 = oo_lat_enabled() ? oo_rdtsc_serialized() : 0;
   while( 1 ) {
     ci_uint64 new_v, v = ni->state->lock.lock;
     if( ! (v & CI_EPLOCK_LOCKED) ) {
       if( ci_netif_trylock(ni) ) {
         ci_bit_clear(&w->sb_aflags, CI_SB_AFLAG_DEFERRED_BIT);
-        if( __d3 ) OO_ADV_ACC(ld_br3, oo_rdtsc() - __d3);
-        ci_uint64 __w3 = oo_lat_enabled() ? oo_rdtsc() : 0;
+        if( __br3 ) OO_ADV_ACC(br3, oo_rdtsc_serialized() - __br3);
+        ci_uint64 __br3_work = oo_lat_enabled() ? oo_rdtsc() : 0;
         citp_waitable_deferred_work(ni, w);
-        if( __w3 ) OO_ADV_ACC(ld_br3_work, oo_rdtsc() - __w3);
-        if( __ldt0 ) OO_ADV_ACC(ld_total, oo_rdtsc() - __ldt0);
+        if( __br3_work ) OO_ADV_ACC(br3_work, oo_rdtsc() - __br3_work);
+        if( __total ) OO_ADV_ACC(total, oo_rdtsc_serialized() - __total);
         return 1;
       }
     }
@@ -987,8 +987,8 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
       new_v = (v & ~CI_EPLOCK_NETIF_SOCKET_LIST) | (W_ID(w) + 1);
       if( ci_cas64u_succeed(&ni->state->lock.lock, v, new_v) ) {
         ++ni->state->defer_work_count;
-        if( __d3 ) OO_ADV_ACC(ld_br3, oo_rdtsc() - __d3);
-        if( __ldt0 ) OO_ADV_ACC(ld_total, oo_rdtsc() - __ldt0);
+        if( __br3 ) OO_ADV_ACC(br3, oo_rdtsc_serialized() - __br3);
+        if( __total ) OO_ADV_ACC(total, oo_rdtsc_serialized() - __total);
         return 0;
       }
     }

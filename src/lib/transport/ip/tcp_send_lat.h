@@ -8,23 +8,24 @@
 #include <asm/timex.h>
 
 static __inline__ ci_uint64 oo_rdtsc(void) { return get_cycles(); }
+static __inline__ ci_uint64 oo_rdtsc_serialized(void) { return get_cycles(); }
 static __inline__ int oo_lat_enabled(void) { return 0; }
 typedef struct {
   ci_uint64 t0;
-  ci_uint64 s_prologue;
-  ci_uint64 s_trylock;
-  ci_uint64 s_fill_tail;
-  ci_uint64 s_flags;
-  ci_uint64 s_adv_nagle;
-  ci_uint64 s_adv;
-  ci_uint64 s_send_space;
-  ci_uint64 s_alloc;
-  ci_uint64 s_fill;
-  ci_uint64 s_enqueue;
-  ci_uint64 s_done_flags;
-  ci_uint64 s_poll;
-  ci_uint64 s_prequeue;
-  ci_uint64 s_unlock;
+  ci_uint64 prologue;
+  ci_uint64 trylock;
+  ci_uint64 fill_tail;
+  ci_uint64 flags;
+  ci_uint64 adv_nagle;
+  ci_uint64 adv_direct;
+  ci_uint64 space;
+  ci_uint64 alloc;
+  ci_uint64 fill;
+  ci_uint64 enqueue;
+  ci_uint64 done_flags;
+  ci_uint64 poll_main;
+  ci_uint64 prequeue;
+  ci_uint64 unlock;
   int poll_cnt;
   int alloc_cnt;
   int lock_ok;
@@ -35,11 +36,11 @@ typedef struct {
 #define OO_SEG(_f, _stmt) do { _stmt; } while(0)
 #define OO_SEG_POLL(_stmt) do { _stmt; } while(0)
 #define OO_LAT_OUTLIER(_n,_t,_r,_w) do {} while(0)
-typedef struct { ci_uint64 adv_hdr; ci_uint64 adv_push; ci_uint64 adv_poll;
-                 ci_uint64 adv_resync; ci_uint64 adv_poll_evq;
-                 ci_uint64 adv_poll_tmr; ci_uint64 preq_txp;
-                 ci_uint64 preq_ld; ci_uint64 ld_br1; ci_uint64 ld_br2;
-                 ci_uint64 ld_br3; } oo_adv_lat_t;
+typedef struct { ci_uint64 hdr; ci_uint64 push; ci_uint64 trailing_poll;
+                 ci_uint64 resync; ci_uint64 poll_evq;
+                 ci_uint64 poll_tmr; ci_uint64 tx_prequeue;
+                 ci_uint64 lock_defer; ci_uint64 br1; ci_uint64 br2;
+                 ci_uint64 br3; } oo_adv_lat_t;
 #define OO_ADV_ACC(_f, _cyc) do {} while(0)
 
 #else /* userspace */
@@ -52,6 +53,16 @@ static __inline__ ci_uint64 oo_rdtsc(void)
 {
   unsigned lo, hi;
   __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+  return ((ci_uint64)hi << 32) | lo;
+}
+
+/* Serialized variant for validating lock_defer vs total: lfence keeps
+ * rdtsc from being reordered across the while(1) spin in
+ * ci_netif_lock_or_defer_work(). Only used at the verification points. */
+static __inline__ ci_uint64 oo_rdtsc_serialized(void)
+{
+  unsigned lo, hi;
+  __asm__ __volatile__("lfence\n\trdtsc" : "=a"(lo), "=d"(hi) :: "memory");
   return ((ci_uint64)hi << 32) | lo;
 }
 
@@ -101,41 +112,41 @@ static __inline__ unsigned long long oo_cyc_to_ns(ci_uint64 cyc)
 /* Sub-segments inside adv_nagle path (tcp_tx.c / ip_tx.c write here via
  * thread-local, ci_tcp_sendmsg drains them at OO_LAT_OUTLIER time). */
 typedef struct {
-  ci_uint64 adv_hdr;    /* header prep loop in advance_to */
-  ci_uint64 adv_push;   /* ci_ip_send_tcp_list: NIC push/PIO/doorbell */
-  ci_uint64 adv_poll;   /* trailing poll in advance_nagle */
-  ci_uint64 adv_resync; /* ci_ip_time_resync */
-  ci_uint64 adv_poll_evq; /* evq drain inside trailing poll */
-  ci_uint64 adv_poll_tmr; /* timer poll inside trailing poll */
-  ci_uint64 preq_txp;   /* ci_tcp_tx_prequeue (CAS link) */
-  ci_uint64 preq_ld;    /* ci_netif_lock_or_defer_work (wait/defer) */
-  ci_uint64 ld_br1;     /* lock_or_defer branch1: defer_work_limit hit, ci_netif_lock */
-  ci_uint64 ld_br1_work;/* br1: citp_waitable_deferred_work while holding lock */
-  ci_uint64 ld_br2;     /* lock_or_defer branch2: DEFERRED_BIT already set, ci_netif_lock */
-  ci_uint64 ld_br2_work;/* br2: citp_waitable_deferred_work while holding lock */
-  ci_uint64 ld_br3;     /* lock_or_defer branch3: primary trylock/CAS path */
-  ci_uint64 ld_br3_work;/* br3 trylock-hit: deferred_work while holding lock */
-  ci_uint64 ld_entry;   /* entry checks: limit load + test_and_set */
-  ci_uint64 ld_total;   /* whole ci_netif_lock_or_defer_work */
+  ci_uint64 hdr;    /* header prep loop in advance_to */
+  ci_uint64 push;   /* ci_ip_send_tcp_list: NIC push/PIO/doorbell */
+  ci_uint64 trailing_poll;   /* trailing poll in advance_nagle */
+  ci_uint64 resync; /* ci_ip_time_resync */
+  ci_uint64 poll_evq; /* evq drain inside trailing poll */
+  ci_uint64 poll_tmr; /* timer poll inside trailing poll */
+  ci_uint64 tx_prequeue;   /* ci_tcp_tx_prequeue (CAS link) */
+  ci_uint64 lock_defer;    /* ci_netif_lock_or_defer_work (wait/defer) */
+  ci_uint64 br1;     /* lock_or_defer branch1: defer_work_limit hit, ci_netif_lock */
+  ci_uint64 br1_work;/* br1: citp_waitable_deferred_work while holding lock */
+  ci_uint64 br2;     /* lock_or_defer branch2: DEFERRED_BIT already set, ci_netif_lock */
+  ci_uint64 br2_work;/* br2: citp_waitable_deferred_work while holding lock */
+  ci_uint64 br3;     /* lock_or_defer branch3: primary trylock/CAS path */
+  ci_uint64 br3_work;/* br3 trylock-hit: deferred_work while holding lock */
+  ci_uint64 entry;   /* entry checks: limit load + test_and_set */
+  ci_uint64 total;   /* whole ci_netif_lock_or_defer_work */
 } oo_adv_lat_t;
 extern __thread oo_adv_lat_t oo_adv_tls;
 #define OO_ADV_ACC(_f, _cyc) do { oo_adv_tls._f += (_cyc); } while(0)
 typedef struct {
   ci_uint64 t0;
-  ci_uint64 s_prologue;   /* entry -> fast_path decision (iov scan etc) */
-  ci_uint64 s_trylock;    /* si_trylock attempts */
-  ci_uint64 s_fill_tail;  /* ci_tcp_tx_fill_sendq_tail (fast path) */
-  ci_uint64 s_flags;      /* PSH/MORE flag setup */
-  ci_uint64 s_adv_nagle;  /* ci_tcp_tx_advance_nagle */
-  ci_uint64 s_adv;        /* ci_tcp_tx_advance */
-  ci_uint64 s_send_space; /* ci_tcp_tx_send_space */
-  ci_uint64 s_alloc;      /* ci_tcp_send_alloc_pkts */
-  ci_uint64 s_fill;       /* ci_tcp_send_fill_pkts (incl memcpy) */
-  ci_uint64 s_enqueue;    /* ci_tcp_sendmsg_enqueue */
-  ci_uint64 s_done_flags; /* final PSH/ACK flag setup */
-  ci_uint64 s_poll;       /* ci_netif_poll */
-  ci_uint64 s_prequeue;   /* ci_tcp_send_via_prequeue */
-  ci_uint64 s_unlock;     /* ci_netif_unlock */
+  ci_uint64 prologue;   /* entry -> fast_path decision (iov scan etc) */
+  ci_uint64 trylock;    /* si_trylock attempts */
+  ci_uint64 fill_tail;  /* ci_tcp_tx_fill_sendq_tail (fast path) */
+  ci_uint64 flags;      /* PSH/MORE flag setup */
+  ci_uint64 adv_nagle;  /* ci_tcp_tx_advance_nagle */
+  ci_uint64 adv_direct;        /* ci_tcp_tx_advance */
+  ci_uint64 space; /* ci_tcp_tx_send_space */
+  ci_uint64 alloc;      /* ci_tcp_send_alloc_pkts */
+  ci_uint64 fill;       /* ci_tcp_send_fill_pkts (incl memcpy) */
+  ci_uint64 enqueue;    /* ci_tcp_sendmsg_enqueue */
+  ci_uint64 done_flags; /* final PSH/ACK flag setup */
+  ci_uint64 poll_main;       /* ci_netif_poll */
+  ci_uint64 prequeue;   /* ci_tcp_send_via_prequeue */
+  ci_uint64 unlock;     /* ci_netif_unlock */
   int poll_cnt;
   int alloc_cnt;
   int lock_ok;
@@ -151,7 +162,7 @@ typedef struct {
     __lat.t0 = oo_rdtsc(); \
   }
 
-/* Time one segment: OO_SEG(s_alloc, m = ci_tcp_send_alloc_pkts(...)); */
+/* Time one segment: OO_SEG(alloc, m = ci_tcp_send_alloc_pkts(...)); */
 #define OO_SEG(_f, _stmt) \
   do { \
     if( __lat_on ) { \
@@ -168,7 +179,7 @@ typedef struct {
     if( __lat_on ) { \
       ci_uint64 __s0 = oo_rdtsc(); \
       _stmt; \
-      __lat.s_poll += oo_rdtsc() - __s0; \
+      __lat.poll_main += oo_rdtsc() - __s0; \
       __lat.poll_cnt++; \
     } else { \
       _stmt; \
@@ -181,40 +192,41 @@ typedef struct {
       ci_uint64 __end = oo_rdtsc(); \
       ci_uint64 __tot = __end - __lat.t0; \
       if( __tot >= oo_lat_thresh_cycles ) { \
-        unsigned long long __tot_ns = oo_cyc_to_ns(__tot); \
-        unsigned long long __pro = oo_cyc_to_ns(__lat.s_prologue); \
-        unsigned long long __ft = oo_cyc_to_ns(__lat.s_fill_tail); \
-        unsigned long long __fl = oo_cyc_to_ns(__lat.s_flags); \
-        unsigned long long __an = oo_cyc_to_ns(__lat.s_adv_nagle); \
-        unsigned long long __ad = oo_cyc_to_ns(__lat.s_adv); \
-        unsigned long long __ss = oo_cyc_to_ns(__lat.s_send_space); \
-        unsigned long long __al = oo_cyc_to_ns(__lat.s_alloc); \
-        unsigned long long __fi = oo_cyc_to_ns(__lat.s_fill); \
-        unsigned long long __en = oo_cyc_to_ns(__lat.s_enqueue); \
-        unsigned long long __df = oo_cyc_to_ns(__lat.s_done_flags); \
-        unsigned long long __po = oo_cyc_to_ns(__lat.s_poll); \
-        unsigned long long __pq = oo_cyc_to_ns(__lat.s_prequeue); \
-        unsigned long long __pt = oo_cyc_to_ns(oo_adv_tls.preq_txp); \
-        unsigned long long __pl = oo_cyc_to_ns(oo_adv_tls.preq_ld); \
-        unsigned long long __b1 = oo_cyc_to_ns(oo_adv_tls.ld_br1); \
-        unsigned long long __b1w = oo_cyc_to_ns(oo_adv_tls.ld_br1_work); \
-        unsigned long long __b2 = oo_cyc_to_ns(oo_adv_tls.ld_br2); \
-        unsigned long long __b2w = oo_cyc_to_ns(oo_adv_tls.ld_br2_work); \
-        unsigned long long __b3 = oo_cyc_to_ns(oo_adv_tls.ld_br3); \
-        unsigned long long __b3w = oo_cyc_to_ns(oo_adv_tls.ld_br3_work); \
-        unsigned long long __lde = oo_cyc_to_ns(oo_adv_tls.ld_entry); \
-        unsigned long long __ldt = oo_cyc_to_ns(oo_adv_tls.ld_total); \
-        unsigned long long __un = oo_cyc_to_ns(__lat.s_unlock); \
-        unsigned long long __rs = oo_cyc_to_ns(oo_adv_tls.adv_resync); \
-        unsigned long long __hd = oo_cyc_to_ns(oo_adv_tls.adv_hdr); \
-        unsigned long long __pu = oo_cyc_to_ns(oo_adv_tls.adv_push); \
-        unsigned long long __ap = oo_cyc_to_ns(oo_adv_tls.adv_poll); \
-        unsigned long long __ev = oo_cyc_to_ns(oo_adv_tls.adv_poll_evq); \
-        unsigned long long __tm = oo_cyc_to_ns(oo_adv_tls.adv_poll_tmr); \
-        unsigned long long __sum = __pro+oo_cyc_to_ns(__lat.s_trylock)+__ft+__fl+__an+__ad+__ss+__al+ \
-            __fi+__en+__df+__po+__pq+__pt+__pl+__un; \
-        long long __resid = (long long)__tot_ns - (long long)__sum; \
-        if( __resid < 0 ) __resid = 0; \
+        unsigned long long __total = oo_cyc_to_ns(__tot); \
+        unsigned long long __prologue = oo_cyc_to_ns(__lat.prologue); \
+        unsigned long long __trylock = oo_cyc_to_ns(__lat.trylock); \
+        unsigned long long __fill_tail = oo_cyc_to_ns(__lat.fill_tail); \
+        unsigned long long __flags = oo_cyc_to_ns(__lat.flags); \
+        unsigned long long __adv_nagle = oo_cyc_to_ns(__lat.adv_nagle); \
+        unsigned long long __adv_direct = oo_cyc_to_ns(__lat.adv_direct); \
+        unsigned long long __space = oo_cyc_to_ns(__lat.space); \
+        unsigned long long __alloc = oo_cyc_to_ns(__lat.alloc); \
+        unsigned long long __fill = oo_cyc_to_ns(__lat.fill); \
+        unsigned long long __enqueue = oo_cyc_to_ns(__lat.enqueue); \
+        unsigned long long __done_flags = oo_cyc_to_ns(__lat.done_flags); \
+        unsigned long long __poll_main = oo_cyc_to_ns(__lat.poll_main); \
+        unsigned long long __prequeue = oo_cyc_to_ns(__lat.prequeue); \
+        unsigned long long __tx_prequeue = oo_cyc_to_ns(oo_adv_tls.tx_prequeue); \
+        unsigned long long __lock_defer = oo_cyc_to_ns(oo_adv_tls.lock_defer); \
+        unsigned long long __br1 = oo_cyc_to_ns(oo_adv_tls.br1); \
+        unsigned long long __br1_work = oo_cyc_to_ns(oo_adv_tls.br1_work); \
+        unsigned long long __br2 = oo_cyc_to_ns(oo_adv_tls.br2); \
+        unsigned long long __br2_work = oo_cyc_to_ns(oo_adv_tls.br2_work); \
+        unsigned long long __br3 = oo_cyc_to_ns(oo_adv_tls.br3); \
+        unsigned long long __br3_work = oo_cyc_to_ns(oo_adv_tls.br3_work); \
+        unsigned long long __entry = oo_cyc_to_ns(oo_adv_tls.entry); \
+        unsigned long long __ld_total = oo_cyc_to_ns(oo_adv_tls.total); \
+        unsigned long long __unlock = oo_cyc_to_ns(__lat.unlock); \
+        unsigned long long __resync = oo_cyc_to_ns(oo_adv_tls.resync); \
+        unsigned long long __hdr = oo_cyc_to_ns(oo_adv_tls.hdr); \
+        unsigned long long __push = oo_cyc_to_ns(oo_adv_tls.push); \
+        unsigned long long __trailing_poll = oo_cyc_to_ns(oo_adv_tls.trailing_poll); \
+        unsigned long long __poll_evq = oo_cyc_to_ns(oo_adv_tls.poll_evq); \
+        unsigned long long __poll_tmr = oo_cyc_to_ns(oo_adv_tls.poll_tmr); \
+        unsigned long long __sum = __prologue+__trylock+__fill_tail+__flags+__adv_nagle+__adv_direct+__space+__alloc+ \
+            __fill+__enqueue+__done_flags+__poll_main+__prequeue+__tx_prequeue+__lock_defer+__unlock; \
+        long long __residual = (long long)__total - (long long)__sum; \
+        if( __residual < 0 ) __residual = 0; \
         { int __pb_alloc = (_ni)->packets->n_pkts_allocated; \
           int __pb_free = (_ni)->packets->n_free; \
           int __pb_rx = (_ni)->state->n_rx_pkts; \
@@ -234,13 +246,13 @@ typedef struct {
           "  [tx_prequeue=%lluns lock_defer=%lluns{br1=%lluns+work=%lluns br2=%lluns+work=%lluns br3=%lluns+work=%lluns entry=%lluns total=%lluns}] unlock=%lluns\n" \
           "  |-pkt_bufs: alloc=%d free=%d rx=%d tx_inuse=%d\n" \
           "  |-unaccounted(residual)=%lluns\n", \
-               (_where), __tot_ns, (int)(_rc), \
+               (_where), __total, (int)(_rc), \
                (int)((_ts)->send.num), (int)((_ts)->retrans.num), \
                __lat.lock_ok, __lat.via_prequeue, \
-               __pro, oo_cyc_to_ns(__lat.s_trylock), __ss, __al, __lat.alloc_cnt, __fi, __en, __df, \
-               __ft, __fl, __an, __rs, __hd, __pu, __ap, __ev, __tm, \
-               __ad, __po, __lat.poll_cnt, __pq, __pt, __pl, __b1, __b1w, __b2, __b2w, __b3, __b3w, __lde, __ldt, __un, \
-               __pb_alloc, __pb_free, __pb_rx, __pb_tx, __resid); } \
+               __prologue, __trylock, __space, __alloc, __lat.alloc_cnt, __fill, __enqueue, __done_flags, \
+               __fill_tail, __flags, __adv_nagle, __resync, __hdr, __push, __trailing_poll, __poll_evq, __poll_tmr, \
+               __adv_direct, __poll_main, __lat.poll_cnt, __prequeue, __tx_prequeue, __lock_defer, __br1, __br1_work, __br2, __br2_work, __br3, __br3_work, __entry, __ld_total, __unlock, \
+               __pb_alloc, __pb_free, __pb_rx, __pb_tx, __residual); } \
       } \
     } \
   } while(0)

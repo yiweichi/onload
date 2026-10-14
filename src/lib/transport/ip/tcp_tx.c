@@ -1437,10 +1437,10 @@ void ci_tcp_tx_advance_to(ci_netif* ni, ci_tcp_state* ts,
 
     if( OO_PP_IS_NULL(pkt->next) ) {
       ++ts->stats.tx_stop_app;
-      if( __h0 ) OO_ADV_ACC(adv_hdr, oo_rdtsc() - __h0);
+      if( __h0 ) OO_ADV_ACC(hdr, oo_rdtsc() - __h0);
       break;
     }
-    if( __h0 ) OO_ADV_ACC(adv_hdr, oo_rdtsc() - __h0);
+    if( __h0 ) OO_ADV_ACC(hdr, oo_rdtsc() - __h0);
     id = pkt->next;
   }
 
@@ -1487,7 +1487,7 @@ void ci_tcp_tx_advance_to(ci_netif* ni, ci_tcp_state* ts,
     else {
       ci_uint64 __u0 = oo_lat_enabled() ? oo_rdtsc() : 0;
       ci_ip_send_tcp_list(ni, ts, sendq->head, last_pkt);
-      if( __u0 ) OO_ADV_ACC(adv_push, oo_rdtsc() - __u0);
+      if( __u0 ) OO_ADV_ACC(push, oo_rdtsc() - __u0);
       if(CI_UNLIKELY( ts->tcpflags & CI_TCPT_FLAG_MSG_WARM ))
         /* This function updated tcp_snd_nxt, burst_window,
          * ts->stats.tx_stop_app.  We made copies of tcp_snd_nxt and

@@ -2226,7 +2226,7 @@ int ci_netif_poll_n(ci_netif* netif, int max_evs)
     ci_assert(n >= 0);
     n_evs_handled += n;
   }
-  if( __e0 ) OO_ADV_ACC(adv_poll_evq, oo_rdtsc() - __e0); }
+  if( __e0 ) OO_ADV_ACC(poll_evq, oo_rdtsc() - __e0); }
   netif->state->poll_start_intf = (offset + 1 >= intf_max) ? 0 : offset + 1;
 
   while( OO_PP_NOT_NULL(netif->state->looppkts) ) {
@@ -2259,7 +2259,7 @@ int ci_netif_poll_n(ci_netif* netif, int max_evs)
    * post-poll list.  So, poll timers after --in_poll. */
   { ci_uint64 __t0 = oo_lat_enabled() ? oo_rdtsc() : 0;
   ci_ip_timer_poll(netif);
-  if( __t0 ) OO_ADV_ACC(adv_poll_tmr, oo_rdtsc() - __t0); }
+  if( __t0 ) OO_ADV_ACC(poll_tmr, oo_rdtsc() - __t0); }
 
   /* Timers MUST NOT send via loopback. */
   ci_assert(OO_PP_IS_NULL(netif->state->looppkts));

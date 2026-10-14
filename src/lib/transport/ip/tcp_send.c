@@ -94,7 +94,7 @@ static void ci_tcp_tx_advance_nagle(ci_netif* ni, ci_tcp_state* ts)
     /* NB. We call advance() before poll() to get best latency. */
     { ci_uint64 __r0 = oo_lat_enabled() ? oo_rdtsc() : 0;
     ci_ip_time_resync(IPTIMER_STATE(ni));
-    if( __r0 ) OO_ADV_ACC(adv_resync, oo_rdtsc() - __r0); }
+    if( __r0 ) OO_ADV_ACC(resync, oo_rdtsc() - __r0); }
     ci_tcp_tx_advance(ts, ni);
     if(CI_UNLIKELY( ts->tcpflags & CI_TCPT_FLAG_MSG_WARM ))
       return;
@@ -139,7 +139,7 @@ static void ci_tcp_tx_advance_nagle(ci_netif* ni, ci_tcp_state* ts)
       ci_netif_may_poll(ni) && ci_netif_has_event(ni) ) {
     ci_uint64 __q0 = oo_lat_enabled() ? oo_rdtsc() : 0;
     ci_netif_poll(ni);
-    if( __q0 ) OO_ADV_ACC(adv_poll, oo_rdtsc() - __q0);
+    if( __q0 ) OO_ADV_ACC(trailing_poll, oo_rdtsc() - __q0);
   }
 }
 
@@ -1862,9 +1862,9 @@ static int ci_tcp_send_via_prequeue(ci_netif* ni, ci_tcp_state* ts,
                                     struct tcp_send_info* sinf)
 {
   int queued = 0, prq_ld = 0;
-  { ci_uint64 __t0 = oo_lat_enabled() ? oo_rdtsc() : 0;
+  { ci_uint64 __tx_prequeue = oo_lat_enabled() ? oo_rdtsc() : 0;
     queued = ci_tcp_tx_prequeue(ni, ts, sinf->fill_list);
-    if( __t0 ) OO_ADV_ACC(preq_txp, oo_rdtsc() - __t0); }
+    if( __tx_prequeue ) OO_ADV_ACC(tx_prequeue, oo_rdtsc() - __tx_prequeue); }
 
   if( ! queued ) {
     /* ! queued means that the connection was shut down, or closed, or
@@ -1877,9 +1877,9 @@ static int ci_tcp_send_via_prequeue(ci_netif* ni, ci_tcp_state* ts,
   }
 
   ci_assert_equal(sinf->stack_locked, 0);
-  { ci_uint64 __t1 = oo_lat_enabled() ? oo_rdtsc() : 0;
+  { ci_uint64 __lock_defer = oo_lat_enabled() ? oo_rdtsc_serialized() : 0;
     prq_ld = ci_netif_lock_or_defer_work(ni, &ts->s.b);
-    if( __t1 ) OO_ADV_ACC(preq_ld, oo_rdtsc() - __t1); }
+    if( __lock_defer ) OO_ADV_ACC(lock_defer, oo_rdtsc_serialized() - __lock_defer); }
   if( prq_ld )
     sinf->stack_locked = 1;
   return 1;
@@ -1964,7 +1964,7 @@ int ci_tcp_sendmsg(ci_netif* ni, ci_tcp_state* ts,
                   (flags & (MSG_OOB | ONLOAD_MSG_WARM)) ))
     goto slow_path;
 
-  if( __lat_on ) __lat.s_prologue = oo_rdtsc() - __lat.t0;
+  if( __lat_on ) __lat.prologue = oo_rdtsc() - __lat.t0;
  fast_path:
   ci_iovec_ptr_init_nz(&piov, iov, iovlen);
 
@@ -1974,7 +1974,7 @@ int ci_tcp_sendmsg(ci_netif* ni, ci_tcp_state* ts,
   { int __fast_locked = 0;
   if( __lat_on ) { ci_uint64 __t0 = oo_rdtsc();
     __fast_locked = si_trylock(ni, &sinf);
-    __lat.s_trylock += oo_rdtsc() - __t0;
+    __lat.trylock += oo_rdtsc() - __t0;
   } else {
     __fast_locked = si_trylock(ni, &sinf);
   }
@@ -1985,7 +1985,7 @@ int ci_tcp_sendmsg(ci_netif* ni, ci_tcp_state* ts,
      * send more data.  However, there is another case:
      * MSG_MORE/TCP_CORK.  In this case, we should really send some
      * data. */
-    OO_SEG(s_fill_tail,
+    OO_SEG(fill_tail,
       ci_tcp_tx_fill_sendq_tail(ni, ts, &piov, &sinf CI_KERNEL_ARG(addr_spc)));
     /* If we have more data to send, do it. */
     if( sinf.total_unsent > 0 )
@@ -1994,7 +1994,7 @@ int ci_tcp_sendmsg(ci_netif* ni, ci_tcp_state* ts,
     /* This is last packet.  Set PUSH flag and MORE flag.
      * Send it if possible. */
     pkt = PKT_CHK(ni, sendq->tail);
-    OO_SEG(s_flags, do {
+    OO_SEG(flags, do {
     if( (flags & MSG_MORE) || (ts->s.s_aflags & CI_SOCK_AFLAG_CORK) ) {
       pkt->flags |= CI_PKT_FLAG_TX_MORE;
       pkt->flags &=~ CI_PKT_FLAG_TX_PSH_ON_ACK;
@@ -2018,9 +2018,9 @@ int ci_tcp_sendmsg(ci_netif* ni, ci_tcp_state* ts,
     if( ~flags & MSG_SENDPAGE_NOTLAST ||
         ci_tcp_tx_send_space(ni, ts) <= 0 )
 #endif
-    OO_SEG(s_adv_nagle, ci_tcp_tx_advance_nagle(ni, ts));
+    OO_SEG(adv_nagle, ci_tcp_tx_advance_nagle(ni, ts));
 
-    OO_SEG(s_unlock, if( sinf.stack_locked ) ci_netif_unlock(ni));
+    OO_SEG(unlock, if( sinf.stack_locked ) ci_netif_unlock(ni));
     OO_LAT_OUTLIER(ni, ts, sinf.total_sent, "fast_path");
     return sinf.total_sent;
   }
@@ -2031,7 +2031,7 @@ int ci_tcp_sendmsg(ci_netif* ni, ci_tcp_state* ts,
   ci_assert(! ci_iovec_ptr_is_empty_proper(&piov));
 
   /* How much space is there in the send queue? */
-  OO_SEG(s_send_space, sinf.sendq_credit = ci_tcp_tx_send_space(ni, ts));
+  OO_SEG(space, sinf.sendq_credit = ci_tcp_tx_send_space(ni, ts));
 
   /* Application is not interested in sending a first small piece of data.
    * If the connection is going on well (CONG_OPEN or CONG_FAST_RECOV),
@@ -2049,13 +2049,13 @@ int ci_tcp_sendmsg(ci_netif* ni, ci_tcp_state* ts,
  try_again:
   while( 1 ) {
     /* Grab packet buffers and fill them with data. */
-    OO_SEG(s_alloc, m = ci_tcp_send_alloc_pkts(ni, ts, &sinf, 0));
+    OO_SEG(alloc, m = ci_tcp_send_alloc_pkts(ni, ts, &sinf, 0));
     if( __lat_on ) __lat.alloc_cnt++;
     if( sinf.n_needed > 0 )
       goto no_pkt_buf;
 
   got_pkt_buf:
-    OO_SEG(s_fill,
+    OO_SEG(fill,
       ci_tcp_send_fill_pkts(ni, ts, &sinf, &piov, m CI_KERNEL_ARG(addr_spc)));
     m = 0;
     /* Look on MSG_MORE: do not send the last packet if it is not full */
@@ -2071,7 +2071,7 @@ int ci_tcp_sendmsg(ci_netif* ni, ci_tcp_state* ts,
     { int __main_locked = 0;
     if( __lat_on ) { ci_uint64 __t0 = oo_rdtsc();
       __main_locked = si_trylock(ni, &sinf);
-      __lat.s_trylock += oo_rdtsc() - __t0;
+      __lat.trylock += oo_rdtsc() - __t0;
     } else {
       __main_locked = si_trylock(ni, &sinf);
     }
@@ -2086,7 +2086,7 @@ int ci_tcp_sendmsg(ci_netif* ni, ci_tcp_state* ts,
       }
 
       /* eff_mss may now be != ts->eff_mss */
-      OO_SEG(s_enqueue, ts->send_in += ci_tcp_sendmsg_enqueue(ni, ts,
+      OO_SEG(enqueue, ts->send_in += ci_tcp_sendmsg_enqueue(ni, ts,
                                             sinf.fill_list,
                                             sinf.fill_list_bytes,
                                             &ts->send));
@@ -2098,7 +2098,7 @@ int ci_tcp_sendmsg(ci_netif* ni, ci_tcp_state* ts,
        * segment gets the PSH flag.
        */
       if( sinf.total_unsent == 0 ) {
-        OO_SEG(s_done_flags, do {
+        OO_SEG(done_flags, do {
         if( (sinf.fill_list->flags & CI_PKT_FLAG_TX_MORE) )
           TX_PKT_IPX_TCP(af, sinf.fill_list)->tcp_flags = CI_TCP_FLAG_ACK;
         else
@@ -2110,13 +2110,13 @@ int ci_tcp_sendmsg(ci_netif* ni, ci_tcp_state* ts,
             ci_tcp_tx_send_space(ni, ts) <= 0 )
 #endif
         {
-        OO_SEG(s_adv_nagle, ci_tcp_tx_advance_nagle(ni, ts));
+        OO_SEG(adv_nagle, ci_tcp_tx_advance_nagle(ni, ts));
         if(CI_UNLIKELY( flags & ONLOAD_MSG_WARM ))
           unroll_msg_warm(ni, ts, &sinf, 0);
         }
         /* Assert that there's no need to free unused packets */
         ci_assert_equal(sinf.pf.alloc_pkt, NULL);
-        OO_SEG(s_unlock, if( sinf.stack_locked ) ci_netif_unlock(ni));
+        OO_SEG(unlock, if( sinf.stack_locked ) ci_netif_unlock(ni));
         OO_LAT_OUTLIER(ni, ts, sinf.total_sent, "main_loop_done");
         return sinf.total_sent;
       }
@@ -2139,7 +2139,7 @@ int ci_tcp_sendmsg(ci_netif* ni, ci_tcp_state* ts,
         return sinf.rc;
       }
       if(CI_LIKELY( ! ci_ip_queue_is_empty(sendq) )) {
-        OO_SEG(s_adv, ci_tcp_tx_advance(ts, ni));
+        OO_SEG(adv_direct, ci_tcp_tx_advance(ts, ni));
       }
       }
     }
@@ -2150,13 +2150,13 @@ int ci_tcp_sendmsg(ci_netif* ni, ci_tcp_state* ts,
           sinf.fill_list->flags |= CI_PKT_FLAG_TX_PSH;
 
       /* Couldn't get the netif lock, so enqueue packets on the prequeue. */
-      { int __preq_ok; OO_SEG(s_prequeue,
-        __preq_ok = ci_tcp_send_via_prequeue(ni, ts, &sinf));
-      if( __lat_on && __preq_ok ) __lat.via_prequeue = 1;
-      if( ! __preq_ok ) {
+      { int __prequeue_ok; OO_SEG(prequeue,
+        __prequeue_ok = ci_tcp_send_via_prequeue(ni, ts, &sinf));
+      if( __lat_on && __prequeue_ok ) __lat.via_prequeue = 1;
+      if( ! __prequeue_ok ) {
         ci_tcp_sendmsg_handle_tx_errno(ni, ts, flags, &sinf);
         if( sinf.set_errno ) CI_SET_ERROR(sinf.rc, sinf.rc);
-        OO_LAT_OUTLIER(ni, ts, sinf.rc, "preq_tx_errno");
+        OO_LAT_OUTLIER(ni, ts, sinf.rc, "tx_prequeue_errno");
         return sinf.rc;
       }
       sinf.total_sent += sinf.fill_list_bytes;
@@ -2164,8 +2164,8 @@ int ci_tcp_sendmsg(ci_netif* ni, ci_tcp_state* ts,
       if( sinf.total_unsent == 0 ) {
         /* Assert that there's no need to free unused packets */
         ci_assert_equal(sinf.pf.alloc_pkt, NULL);
-        OO_SEG(s_unlock, if( sinf.stack_locked ) ci_netif_unlock(ni));
-        OO_LAT_OUTLIER(ni, ts, sinf.total_sent, "main_loop_preq_done");
+        OO_SEG(unlock, if( sinf.stack_locked ) ci_netif_unlock(ni));
+        OO_LAT_OUTLIER(ni, ts, sinf.total_sent, "main_loop_prequeue_done");
         return sinf.total_sent;
       }
       /* We've more to send, so keep filling buffers. */
