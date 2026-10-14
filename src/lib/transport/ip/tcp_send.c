@@ -1877,9 +1877,9 @@ static int ci_tcp_send_via_prequeue(ci_netif* ni, ci_tcp_state* ts,
   }
 
   ci_assert_equal(sinf->stack_locked, 0);
-  { ci_uint64 __lock_defer = oo_lat_enabled() ? oo_rdtsc_serialized() : 0;
+  { ci_uint64 __lock_defer = oo_lat_enabled() ? oo_rdtsc_begin() : 0;
     prq_ld = ci_netif_lock_or_defer_work(ni, &ts->s.b);
-    if( __lock_defer ) OO_ADV_ACC(lock_defer, oo_rdtsc_serialized() - __lock_defer); }
+    if( __lock_defer ) OO_ADV_ACC(lock_defer, oo_rdtsc_end() - __lock_defer); }
   if( prq_ld )
     sinf->stack_locked = 1;
   return 1;

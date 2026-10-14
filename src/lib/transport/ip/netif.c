@@ -892,6 +892,7 @@ static void citp_waitable_deferred_work(ci_netif* ni, citp_waitable* w)
 
 int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
 {
+  volatile ci_uint64 __enter = oo_lat_enabled() ? oo_rdtsc_begin() : 0;
 #if CI_CFG_FD_CACHING && !defined(NDEBUG)
   /* Cached sockets should not be deferring work - there are no user references
    */
@@ -904,8 +905,9 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
    */
   ci_assert(!(w->sb_aflags & CI_SB_AFLAG_ORPHAN));
 
-  ci_uint64 __total = oo_lat_enabled() ? oo_rdtsc_serialized() : 0;
-  ci_uint64 __entry_start = __total;
+  volatile ci_uint64 __total = oo_lat_enabled() ? oo_rdtsc_begin() : 0;
+  volatile ci_uint64 __entry_start = __total;
+  if( __enter ) OO_ADV_ACC(enter_gap, oo_rdtsc_end() - __enter);
   if( ni->state->defer_work_count >= NI_OPTS(ni).defer_work_limit ) {
     if( __entry_start ) OO_ADV_ACC(entry, oo_rdtsc() - __entry_start);
     ci_uint64 __br1 = oo_lat_enabled() ? oo_rdtsc() : 0;
@@ -968,17 +970,21 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
     return 0;
   }
 
-  { ci_uint64 __br3 = oo_lat_enabled() ? oo_rdtsc_serialized() : 0;
+  { volatile ci_uint64 __br3 = oo_lat_enabled() ? oo_rdtsc_begin() : 0;
+  unsigned __br3_spins = 0;
   while( 1 ) {
+    __br3_spins++;
     ci_uint64 new_v, v = ni->state->lock.lock;
     if( ! (v & CI_EPLOCK_LOCKED) ) {
       if( ci_netif_trylock(ni) ) {
         ci_bit_clear(&w->sb_aflags, CI_SB_AFLAG_DEFERRED_BIT);
-        if( __br3 ) OO_ADV_ACC(br3, oo_rdtsc_serialized() - __br3);
+        if( __br3 ) OO_ADV_ACC(br3, oo_rdtsc_end() - __br3);
+        if( __br3 ) OO_ADV_ACC(br3_spins, __br3_spins);
+        if( __br3 ) OO_ADV_ACC(br3_lock, 1);
         ci_uint64 __br3_work = oo_lat_enabled() ? oo_rdtsc() : 0;
         citp_waitable_deferred_work(ni, w);
         if( __br3_work ) OO_ADV_ACC(br3_work, oo_rdtsc() - __br3_work);
-        if( __total ) OO_ADV_ACC(total, oo_rdtsc_serialized() - __total);
+        if( __total ) OO_ADV_ACC(total, oo_rdtsc_end() - __enter);
         return 1;
       }
     }
@@ -987,8 +993,10 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
       new_v = (v & ~CI_EPLOCK_NETIF_SOCKET_LIST) | (W_ID(w) + 1);
       if( ci_cas64u_succeed(&ni->state->lock.lock, v, new_v) ) {
         ++ni->state->defer_work_count;
-        if( __br3 ) OO_ADV_ACC(br3, oo_rdtsc_serialized() - __br3);
-        if( __total ) OO_ADV_ACC(total, oo_rdtsc_serialized() - __total);
+        if( __br3 ) OO_ADV_ACC(br3, oo_rdtsc_end() - __br3);
+        if( __br3 ) OO_ADV_ACC(br3_spins, __br3_spins);
+        if( __br3 ) OO_ADV_ACC(br3_defer, 1);
+        if( __total ) OO_ADV_ACC(total, oo_rdtsc_end() - __enter);
         return 0;
       }
     }

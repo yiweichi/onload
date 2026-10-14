@@ -8,6 +8,8 @@
 #include <asm/timex.h>
 
 static __inline__ ci_uint64 oo_rdtsc(void) { return get_cycles(); }
+static __inline__ ci_uint64 oo_rdtsc_begin(void) { return get_cycles(); }
+static __inline__ ci_uint64 oo_rdtsc_end(void) { return get_cycles(); }
 static __inline__ ci_uint64 oo_rdtsc_serialized(void) { return get_cycles(); }
 static __inline__ int oo_lat_enabled(void) { return 0; }
 typedef struct {
@@ -39,8 +41,11 @@ typedef struct {
 typedef struct { ci_uint64 hdr; ci_uint64 push; ci_uint64 trailing_poll;
                  ci_uint64 resync; ci_uint64 poll_evq;
                  ci_uint64 poll_tmr; ci_uint64 tx_prequeue;
-                 ci_uint64 lock_defer; ci_uint64 br1; ci_uint64 br2;
-                 ci_uint64 br3; } oo_adv_lat_t;
+                 ci_uint64 lock_defer; ci_uint64 br1; ci_uint64 br1_work;
+                 ci_uint64 br2; ci_uint64 br2_work; ci_uint64 br3;
+                 ci_uint64 br3_work; ci_uint64 br3_spins; ci_uint64 br3_lock;
+                 ci_uint64 br3_defer; ci_uint64 entry;
+                 ci_uint64 enter_gap; ci_uint64 total; } oo_adv_lat_t;
 #define OO_ADV_ACC(_f, _cyc) do {} while(0)
 
 #else /* userspace */
@@ -48,22 +53,43 @@ typedef struct { ci_uint64 hdr; ci_uint64 push; ci_uint64 trailing_poll;
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <time.h>
 
+/* rdtscp + lfence backend. rdtscp waits for prior instructions, trailing
+ * lfence blocks later loads from leaking into the reading. begin adds a
+ * leading lfence too so the interval is fenced on both sides. */
 static __inline__ ci_uint64 oo_rdtsc(void)
 {
-  unsigned lo, hi;
-  __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+  unsigned lo, hi, aux;
+  __asm__ __volatile__("rdtscp\n\tlfence"
+                       : "=a"(lo), "=d"(hi), "=c"(aux) :: "memory");
   return ((ci_uint64)hi << 32) | lo;
 }
+static __inline__ unsigned oo_rdtscp_cpu(void)
+{
+  unsigned lo, hi, aux;
+  __asm__ __volatile__("rdtscp" : "=a"(lo), "=d"(hi), "=c"(aux) :: "memory");
+  return aux;
+}
 
-/* Serialized variant for validating lock_defer vs total: lfence keeps
- * rdtsc from being reordered across the while(1) spin in
- * ci_netif_lock_or_defer_work(). Only used at the verification points. */
+/* Paired serialized variants for lock_defer vs total validation. */
+static __inline__ ci_uint64 oo_rdtsc_begin(void)
+{
+  unsigned lo, hi, aux;
+  __asm__ __volatile__("lfence\n\trdtscp\n\tlfence"
+                       : "=a"(lo), "=d"(hi), "=c"(aux) :: "memory");
+  return ((ci_uint64)hi << 32) | lo;
+}
+static __inline__ ci_uint64 oo_rdtsc_end(void)
+{
+  unsigned lo, hi, aux;
+  __asm__ __volatile__("rdtscp\n\tlfence"
+                       : "=a"(lo), "=d"(hi), "=c"(aux) :: "memory");
+  return ((ci_uint64)hi << 32) | lo;
+}
 static __inline__ ci_uint64 oo_rdtsc_serialized(void)
 {
-  unsigned lo, hi;
-  __asm__ __volatile__("lfence\n\trdtsc" : "=a"(lo), "=d"(hi) :: "memory");
-  return ((ci_uint64)hi << 32) | lo;
+  return oo_rdtsc_begin();
 }
 
 static ci_uint64 oo_lat_thresh_cycles = 0;
@@ -126,7 +152,11 @@ typedef struct {
   ci_uint64 br2_work;/* br2: citp_waitable_deferred_work while holding lock */
   ci_uint64 br3;     /* lock_or_defer branch3: primary trylock/CAS path */
   ci_uint64 br3_work;/* br3 trylock-hit: deferred_work while holding lock */
+  ci_uint64 br3_spins; /* br3 while(1) iterations before success */
+  ci_uint64 br3_lock;  /* br3 trylock-hit count (lock free, return 1) */
+  ci_uint64 br3_defer; /* br3 CAS-defer count (lock held, return 0) */
   ci_uint64 entry;   /* entry checks: limit load + test_and_set */
+  ci_uint64 enter_gap; /* fn entry -> __total (asserts blind spot) */
   ci_uint64 total;   /* whole ci_netif_lock_or_defer_work */
 } oo_adv_lat_t;
 extern __thread oo_adv_lat_t oo_adv_tls;
@@ -214,7 +244,11 @@ typedef struct {
         unsigned long long __br2_work = oo_cyc_to_ns(oo_adv_tls.br2_work); \
         unsigned long long __br3 = oo_cyc_to_ns(oo_adv_tls.br3); \
         unsigned long long __br3_work = oo_cyc_to_ns(oo_adv_tls.br3_work); \
+        unsigned long long __br3_spins = (unsigned long long)oo_adv_tls.br3_spins; \
+        unsigned long long __br3_lock = (unsigned long long)oo_adv_tls.br3_lock; \
+        unsigned long long __br3_defer = (unsigned long long)oo_adv_tls.br3_defer; \
         unsigned long long __entry = oo_cyc_to_ns(oo_adv_tls.entry); \
+        unsigned long long __enter_gap = oo_cyc_to_ns(oo_adv_tls.enter_gap); \
         unsigned long long __ld_total = oo_cyc_to_ns(oo_adv_tls.total); \
         unsigned long long __unlock = oo_cyc_to_ns(__lat.unlock); \
         unsigned long long __resync = oo_cyc_to_ns(oo_adv_tls.resync); \
@@ -243,7 +277,7 @@ typedef struct {
           "  |  |-resync=%lluns hdr=%lluns push=%lluns trailing_poll=%lluns\n" \
           "  |     |-poll_evq=%lluns poll_tmr=%lluns\n" \
           "  |-adv_direct=%lluns poll_main=%lluns(%d) prequeue=%lluns " \
-          "  [tx_prequeue=%lluns lock_defer=%lluns{br1=%lluns+work=%lluns br2=%lluns+work=%lluns br3=%lluns+work=%lluns entry=%lluns total=%lluns}] unlock=%lluns\n" \
+          "  [tx_prequeue=%lluns lock_defer=%lluns{br1=%lluns+work=%lluns br2=%lluns+work=%lluns br3=%lluns(spins=%llu,lock=%llu,defer=%llu)+work=%lluns entry=%lluns total=%lluns enter_gap=%lluns}] unlock=%lluns\n" \
           "  |-pkt_bufs: alloc=%d free=%d rx=%d tx_inuse=%d\n" \
           "  |-unaccounted(residual)=%lluns\n", \
                (_where), __total, (int)(_rc), \
@@ -251,7 +285,7 @@ typedef struct {
                __lat.lock_ok, __lat.via_prequeue, \
                __prologue, __trylock, __space, __alloc, __lat.alloc_cnt, __fill, __enqueue, __done_flags, \
                __fill_tail, __flags, __adv_nagle, __resync, __hdr, __push, __trailing_poll, __poll_evq, __poll_tmr, \
-               __adv_direct, __poll_main, __lat.poll_cnt, __prequeue, __tx_prequeue, __lock_defer, __br1, __br1_work, __br2, __br2_work, __br3, __br3_work, __entry, __ld_total, __unlock, \
+               __adv_direct, __poll_main, __lat.poll_cnt, __prequeue, __tx_prequeue, __lock_defer, __br1, __br1_work, __br2, __br2_work, __br3, __br3_spins, __br3_lock, __br3_defer, __br3_work, __entry, __ld_total, __enter_gap, __unlock, \
                __pb_alloc, __pb_free, __pb_rx, __pb_tx, __residual); } \
       } \
     } \
