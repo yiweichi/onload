@@ -907,8 +907,12 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
 
   volatile ci_uint64 __total = oo_lat_enabled() ? oo_rdtsc_begin() : 0;
   volatile ci_uint64 __entry_start = __total;
+  int __skip_limit = NI_OPTS(ni).lock_defer_skip_limit;
+  int __skip_push = NI_OPTS(ni).lock_defer_skip_push;
+  int __skip_take = NI_OPTS(ni).lock_defer_skip_take;
   if( __enter ) OO_ADV_ACC(enter_gap, oo_rdtsc_end() - __enter);
-  if( ni->state->defer_work_count >= NI_OPTS(ni).defer_work_limit ) {
+  if( ! __skip_limit &&
+      ni->state->defer_work_count >= NI_OPTS(ni).defer_work_limit ) {
     if( __entry_start ) OO_ADV_ACC(entry, oo_rdtsc() - __entry_start);
     ci_uint64 __br1 = oo_lat_enabled() ? oo_rdtsc() : 0;
     int rc = ci_netif_lock(ni);
@@ -930,7 +934,7 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
   ci_uint64 __entry_tas = oo_lat_enabled() ? oo_rdtsc() : 0;
   int __was_set = ci_bit_test_and_set(&w->sb_aflags, CI_SB_AFLAG_DEFERRED_BIT);
   if( __entry_start ) OO_ADV_ACC(entry, oo_rdtsc() - __entry_tas);
-  if( __was_set ) {
+  if( __was_set && ! __skip_push ) {
     ci_uint64 __br2 = oo_lat_enabled() ? oo_rdtsc() : 0;
     /* Already set.  Another thread is trying to defer some work for this
      * socket.  However, we must do **our** work in time, so let's push it
@@ -969,13 +973,24 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
     if( __total ) OO_ADV_ACC(total, oo_rdtsc() - __total);
     return 0;
   }
+  if( __was_set ) {
+    /* EF_LOCK_DEFER_SKIP_PUSH=1: branch 2 disabled.  Do not block on the
+     * lock to push our own work forward; hand it over to the lock holder
+     * instead (same as the interrupted-by-signal fallback above).  The
+     * bit stays set, so the work runs when the deferred list is purged.
+     * Queued data may be delayed; measurement use only. */
+    CITP_STATS_NETIF_INC(ni, defer_work_contended_unsafe);
+    ++ni->state->defer_work_count;
+    if( __total ) OO_ADV_ACC(total, oo_rdtsc() - __total);
+    return 0;
+  }
 
   { volatile ci_uint64 __br3 = oo_lat_enabled() ? oo_rdtsc_begin() : 0;
   unsigned __br3_spins = 0;
   while( 1 ) {
     __br3_spins++;
     ci_uint64 new_v, v = ni->state->lock.lock;
-    if( ! (v & CI_EPLOCK_LOCKED) ) {
+    if( ! (v & CI_EPLOCK_LOCKED) && ! __skip_take ) {
       if( ci_netif_trylock(ni) ) {
         ci_bit_clear(&w->sb_aflags, CI_SB_AFLAG_DEFERRED_BIT);
         if( __br3 ) OO_ADV_ACC(br3, oo_rdtsc_end() - __br3);
@@ -989,6 +1004,10 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
       }
     }
     else {
+      /* With EF_LOCK_DEFER_SKIP_TAKE=1 this path is also taken when the
+       * lock is free: we queue for a holder who does not exist yet, so the
+       * work waits for the next lock/unlock cycle.  Latency ablation use
+       * only; it delays (but does not lose) the queued data. */
       w->next_id = v & CI_EPLOCK_NETIF_SOCKET_LIST;
       new_v = (v & ~CI_EPLOCK_NETIF_SOCKET_LIST) | (W_ID(w) + 1);
       if( ci_cas64u_succeed(&ni->state->lock.lock, v, new_v) ) {
