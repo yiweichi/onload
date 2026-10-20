@@ -1,0 +1,56 @@
+你的`citp_tcp_send()` -> `ci_tcp_sendmsg()`本身全程在用户态、无系统调用，正常就是`0.5-2us`。`p99.9 20us`一定是某条慢分支被偶发踩到。不要猜，直接分段打点抓慢调用。
+
+## 1. 先排除测量假象，几分钟就能做完
+
+1. 发端线程`isolcpus + taskset + SCHED_FIFO + mlockall`，`EF_INT_DRIVEN=0 EF_POLL_USEC=100000`，确认p99.9还在不在。很多20us尾延迟是线程被调度走 / 被网卡中断打断，不是onload问题。
+2. 确认`write len`固定、`TCP_NODELAY=1`、非阻塞。Nagle开着时`ci_tcp_tx_advance_nagle()`(`src/lib/transport/ip/tcp_send.c:73`)会故意不`advance`，延迟取决于下一次ACK到达。
+3. 用`EF_STATS=1 / onload_stackdump`看慢调用时`tx_msg_warm_abort, retrans, cwnd`有没有涨。先看计数器再看代码。
+
+## 2. 尾延迟一定在这5个分支里
+
+读`src/lib/transport/ip/tcp_send.c:ci_tcp_sendmsg()`全流程，只有这些地方能差出10us+：
+
+| 可疑点 | 代码 | 特征 |
+|---|---|---|
+| `netif_lock`抢不到 | `1197: trylock失败`，`1312: ci_netif_lock()`阻塞，`1866: lock_or_defer_work` | 同stack上有收包/另一个线程也在send，慢调用会伴随`ci_netif_poll()`耗时大 |
+| `ci_netif_poll()`顺手干了重活 | `1557,2085,2136,2433,1680: poll`清RX/TX completion、处理重传/ACK | poll一次收了一堆包 / 触发重传，send被连带 |
+| `pkt_alloc`慢路径 | `1424: alloc_nonb`失败 -> `1452: poll` -> `ci_netif_pkt_alloc_slow()`，`2545: alloc` | sndbuf满 / TX ring满 / buffer压力大时走，慢调用返回前一定做过poll+free |
+| PIO失败回退DMA | `390-1030: PIO`，`411: PIO_EN?`，`777,854,934,986: ef_pio_memcpy / ef_vi_transmit_pio`失败走DMA+doorbell | PIO region被占 / 包太大 / 对齐不行，`pio fallback`一次就多几us-十几us |
+| 用户copy缺页/TLB | `887: memcpy payload`，`2606: memcpy headers` | 首次touch大buffer、hugetlb没锁，偶发page fault 10us+ |
+
+正常fast path就是：`trylock成功 -> alloc_nonb成功 -> memcpy -> tx_advance -> pio push`，2us内结束。p99.9慢一定是走了上面某一行的`UNLIKELY`。
+
+## 3. 怎么定位：TSC分段打点抓慢调用
+
+最直接：在`ci_tcp_sendmsg()`进出口 + 每个分支打`RDTSC`，只记录`>10us`的调用。
+
+建议的打点位，按顺序：
+
+```c
+// src/lib/transport/ip/tcp_send.c, ci_tcp_sendmsg / tcp_sendmsg_spin / do_send
+u64 t0=rdtsc(), t_lock, t_alloc, t_copy, t_advance, t_poll, t_push;
+// 1. t_lock: trylock/lock返回后
+// 2. t_poll: 每次 ci_netif_poll(ni) 前后
+// 3. t_alloc: ci_netif_pkt_alloc_nonb / _slow 前后
+// 4. t_copy: memcpy payload前后
+// 5. t_advance/push: ci_tcp_tx_advance_nagle / ef_vi_transmit_pio / doorbell前后
+if (t_end - t0 > THRESH) log(t0,各段差值, rc, sendq->num, retrans.num, tx_space);
+```
+
+做法：
+
+1. 用`CI_CFG_TIME`或自己`__rdtsc()`写进per-thread ring buffer（不要每次`printf`，会污染延迟），跑几百次复现后dump。
+2. 画每段的独立histogram。尾延迟root cause就是看：慢调用里哪一段的p99.9最大。经验上大概率是`poll`或`pkt_alloc_slow`或`PIO fallback`三选一。
+3. 不想改onload源码：用`bpftrace/eBPF uprobe` hook `ci_tcp_sendmsg, ci_netif_poll, ci_netif_pkt_alloc_slow, ef_vi_transmit_pio, ci_tcp_tx_advance`，算各段耗时分布，零侵入。
+
+同时关联现场：慢调用发生时打印`ts->send.num, ts->retrans.num, ef_vi_transmit_space(), cwnd, inflight, pio_ok?`。如果是ring满/cwnd限，`advance`根本不会push，问题在对端ACK慢/窗口小，不是send本身。
+
+## 4. 对症修复
+
+* 锁竞争：发收分离stack（`EF_STACK_PER_SOCKET`）或单线程独占stack，发端`spin`代替`block`。
+* poll重：`EF_INT_DRIVEN=0` + 收发分离，send路径不被RX completion拖住；或改用`ONLOAD_MSG_WARM`预热。
+* alloc慢：调大`sndbuf / EF_TXQ_SIZE / packet buffers`，避免ring打满；检查是否有人忘了收ACK导致`retrans`堆积。
+* PIO回退：确认网卡`OO_VI_FLAGS_PIO_EN`常开，小包走CTPIO，大包本来就该DMA不要强求；`ONLOAD_TEMPLATE_FLAGS_PIO_RETRY`逻辑看`710`行。
+* copy缺页：buffer `mlock + 预fault + hugepage`，发前先touch。
+
+你先按第3节加上5个TSC点跑一轮，把`>10us`调用的各段耗时贴出来，我帮你看是哪一行，下一步再针对性改那段代码。
