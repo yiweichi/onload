@@ -909,7 +909,6 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
   volatile ci_uint64 __entry_start = __total;
   int __skip_limit = NI_OPTS(ni).lock_defer_skip_limit;
   int __skip_push = NI_OPTS(ni).lock_defer_skip_push;
-  int __skip_take = NI_OPTS(ni).lock_defer_skip_take;
   if( __enter ) OO_ADV_ACC(enter_gap, oo_rdtsc_end() - __enter);
   if( ! __skip_limit &&
       ni->state->defer_work_count >= NI_OPTS(ni).defer_work_limit ) {
@@ -990,7 +989,7 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
   while( 1 ) {
     __br3_spins++;
     ci_uint64 new_v, v = ni->state->lock.lock;
-    if( ! (v & CI_EPLOCK_LOCKED) && ! __skip_take ) {
+    if( ! (v & CI_EPLOCK_LOCKED) ) {
       if( ci_netif_trylock(ni) ) {
         ci_bit_clear(&w->sb_aflags, CI_SB_AFLAG_DEFERRED_BIT);
         if( __br3 ) OO_ADV_ACC(br3, oo_rdtsc_end() - __br3);

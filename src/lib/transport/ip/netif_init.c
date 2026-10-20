@@ -899,8 +899,6 @@ void ci_netif_config_opts_getenv(ci_netif_config_opts* opts)
     opts->lock_defer_skip_limit = atoi(s);
   if ( (s = getenv("EF_LOCK_DEFER_SKIP_PUSH")) )
     opts->lock_defer_skip_push = atoi(s);
-  if ( (s = getenv("EF_LOCK_DEFER_SKIP_TAKE")) )
-    opts->lock_defer_skip_take = atoi(s);
   if( (s = getenv("EF_UDP_SEND_UNLOCK_THRESH")) )
     opts->udp_send_unlock_thresh = atoi(s);
   if( (s = getenv("EF_UDP_PORT_HANDOVER_MIN")) )

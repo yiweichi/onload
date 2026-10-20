@@ -843,14 +843,6 @@ CI_CFG_OPT("EF_LOCK_DEFER_SKIP_PUSH", lock_defer_skip_push, ci_uint32,
 "queued data and is intended for latency ablation experiments only.",
            , , 0, 0, 1, value)
 
-CI_CFG_OPT("EF_LOCK_DEFER_SKIP_TAKE", lock_defer_skip_take, ci_uint32,
-"Disable the trylock path (branch 3) in ci_netif_lock_or_defer_work().  When "
-"set, a thread never takes the stack lock to perform its own deferred work; "
-"it always queues the work for the lock holder, even when the lock is free.  "
-"This defers all such work to the next unlock, and is intended for latency "
-"ablation experiments only.",
-           , , 0, 0, 1, value)
-
 CI_CFG_OPT("EF_UDP_SEND_UNLOCK_THRESH", udp_send_unlock_thresh, ci_uint16,
 "UDP message size below which we attempt to take the stack lock early.  "
 "Taking the lock early reduces overhead and latency slightly, but may "

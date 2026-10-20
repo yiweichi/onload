@@ -313,6 +313,13 @@ void ci_tcp_tx_fill_sendq_tail(ci_netif* ni, ci_tcp_state* ts,
   /* Caller checked this, so we don't have to */
   ci_assert(ci_ip_queue_not_empty(sendq));
 
+  /* EF_LOCK_DEFER_SKIP_PUSH: see ci_tcp_sendmsg_enqueue().  We must not
+   * steal space in the last packet ahead of packets sitting on the
+   * prequeue, as that would assign them a lower sequence number. */
+  if( NI_OPTS(ni).lock_defer_skip_push && ts->s.tx_errno == 0 &&
+      OO_PP_NOT_NULL(ts->send_prequeue) )
+    ci_tcp_sendmsg_enqueue_prequeue(ni, ts, 0);
+
   pkt = PKT_CHK(ni, sendq->tail);
   if( ts->s.tx_errno == 0 &&
       (NI_OPTS(ni).tcp_combine_sends_mode == 0 ||
@@ -1046,7 +1053,7 @@ static int ci_tcp_sendmsg_enqueue(ci_netif* ni, ci_tcp_state* ts,
                                    int total_bytes,
                                    ci_ip_pkt_queue* sendq)
 {
-  unsigned seq = tcp_enq_nxt(ts) + total_bytes;
+  unsigned seq;
   oo_pkt_p tail_pkt_id = OO_PKT_P(reverse_list);
   oo_pkt_p send_list = OO_PP_NULL;
   ci_ip_pkt_fmt* pkt;
@@ -1054,6 +1061,17 @@ static int ci_tcp_sendmsg_enqueue(ci_netif* ni, ci_tcp_state* ts,
 
   ci_assert(ci_netif_is_locked(ni));
   ci_assert_equal(ts->s.tx_errno, 0);
+
+  /* EF_LOCK_DEFER_SKIP_PUSH: with branch 2 of
+   * ci_netif_lock_or_defer_work() disabled, a socket can be left with
+   * packets on the prequeue that nobody has pushed forward.  Drain them
+   * first, so that the packets we are about to enqueue cannot overtake
+   * data that was queued earlier. */
+  if( NI_OPTS(ni).lock_defer_skip_push && sendq == &ts->send &&
+      OO_PP_NOT_NULL(ts->send_prequeue) )
+    ci_tcp_sendmsg_enqueue_prequeue(ni, ts, 0);
+
+  seq = tcp_enq_nxt(ts) + total_bytes;
 
   do {
     pkt = reverse_list;
