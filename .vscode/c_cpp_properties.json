@@ -1,9 +1,0 @@
-{
-    "configurations": [
-      {
-        "name": "WSL",
-        "compileCommands": "${workspaceFolder}/compile_commands.json"
-      }
-    ],
-    "version": 4
-  }
