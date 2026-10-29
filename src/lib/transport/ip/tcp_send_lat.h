@@ -41,7 +41,8 @@ typedef struct {
 typedef struct { ci_uint64 hdr; ci_uint64 push; ci_uint64 trailing_poll;
                  ci_uint64 resync; ci_uint64 poll_evq;
                  ci_uint64 poll_tmr; ci_uint64 tx_prequeue;
-                 ci_uint64 lock_defer; ci_uint64 br1; ci_uint64 br1_work;
+                 ci_uint64 lock_defer; ci_uint64 send_prequeue_drain;
+                 ci_uint64 send_prequeue_tail_drain; ci_uint64 br1; ci_uint64 br1_work;
                  ci_uint64 br2; ci_uint64 br2_work; ci_uint64 br3;
                  ci_uint64 br3_work; ci_uint64 br3_spins; ci_uint64 br3_lock;
                  ci_uint64 br3_defer; ci_uint64 entry;
@@ -146,6 +147,8 @@ typedef struct {
   ci_uint64 poll_tmr; /* timer poll inside trailing poll */
   ci_uint64 tx_prequeue;   /* ci_tcp_tx_prequeue (CAS link) */
   ci_uint64 lock_defer;    /* ci_netif_lock_or_defer_work (wait/defer) */
+  ci_uint64 send_prequeue_drain; /* sendmsg enqueue drain */
+  ci_uint64 send_prequeue_tail_drain; /* sendq tail fill drain */
   ci_uint64 br1;     /* lock_or_defer branch1: defer_work_limit hit, ci_netif_lock */
   ci_uint64 br1_work;/* br1: citp_waitable_deferred_work while holding lock */
   ci_uint64 br2;     /* lock_or_defer branch2: DEFERRED_BIT already set, ci_netif_lock */
@@ -237,6 +240,8 @@ typedef struct {
         unsigned long long __poll_main = oo_cyc_to_ns(__lat.poll_main); \
         unsigned long long __prequeue = oo_cyc_to_ns(__lat.prequeue); \
         unsigned long long __tx_prequeue = oo_cyc_to_ns(oo_adv_tls.tx_prequeue); \
+        unsigned long long __send_prequeue_drain = oo_cyc_to_ns(oo_adv_tls.send_prequeue_drain); \
+        unsigned long long __send_prequeue_tail_drain = oo_cyc_to_ns(oo_adv_tls.send_prequeue_tail_drain); \
         unsigned long long __lock_defer = oo_cyc_to_ns(oo_adv_tls.lock_defer); \
         unsigned long long __br1 = oo_cyc_to_ns(oo_adv_tls.br1); \
         unsigned long long __br1_work = oo_cyc_to_ns(oo_adv_tls.br1_work); \
@@ -258,7 +263,7 @@ typedef struct {
         unsigned long long __poll_evq = oo_cyc_to_ns(oo_adv_tls.poll_evq); \
         unsigned long long __poll_tmr = oo_cyc_to_ns(oo_adv_tls.poll_tmr); \
         unsigned long long __sum = __prologue+__trylock+__fill_tail+__flags+__adv_nagle+__adv_direct+__space+__alloc+ \
-            __fill+__enqueue+__done_flags+__poll_main+__prequeue+__tx_prequeue+__lock_defer+__unlock; \
+            __fill+__enqueue+__done_flags+__poll_main+__prequeue+__tx_prequeue+__send_prequeue_drain+__send_prequeue_tail_drain+__lock_defer+__unlock; \
         long long __residual = (long long)__total - (long long)__sum; \
         if( __residual < 0 ) __residual = 0; \
         { int __pb_alloc = (_ni)->packets->n_pkts_allocated; \
@@ -278,6 +283,7 @@ typedef struct {
           "  |     |-poll_evq=%lluns poll_tmr=%lluns\n" \
           "  |-adv_direct=%lluns poll_main=%lluns(%d) prequeue=%lluns " \
           "  [tx_prequeue=%lluns lock_defer=%lluns{br1=%lluns+work=%lluns br2=%lluns+work=%lluns br3=%lluns(spins=%llu,lock=%llu,defer=%llu)+work=%lluns entry=%lluns total=%lluns enter_gap=%lluns}] unlock=%lluns\n" \
+          "  |-prequeue_drain: send_enqueue=%lluns send_tail=%lluns\n" \
           "  |-pkt_bufs: alloc=%d free=%d rx=%d tx_inuse=%d\n" \
           "  |-unaccounted(residual)=%lluns\n", \
                (_where), __total, (int)(_rc), \
@@ -286,6 +292,7 @@ typedef struct {
                __prologue, __trylock, __space, __alloc, __lat.alloc_cnt, __fill, __enqueue, __done_flags, \
                __fill_tail, __flags, __adv_nagle, __resync, __hdr, __push, __trailing_poll, __poll_evq, __poll_tmr, \
                __adv_direct, __poll_main, __lat.poll_cnt, __prequeue, __tx_prequeue, __lock_defer, __br1, __br1_work, __br2, __br2_work, __br3, __br3_spins, __br3_lock, __br3_defer, __br3_work, __entry, __ld_total, __enter_gap, __unlock, \
+               __send_prequeue_drain, __send_prequeue_tail_drain, \
                __pb_alloc, __pb_free, __pb_rx, __pb_tx, __residual); } \
       } \
     } \

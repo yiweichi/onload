@@ -317,8 +317,13 @@ void ci_tcp_tx_fill_sendq_tail(ci_netif* ni, ci_tcp_state* ts,
    * steal space in the last packet ahead of packets sitting on the
    * prequeue, as that would assign them a lower sequence number. */
   if( NI_OPTS(ni).lock_defer_skip_push && ts->s.tx_errno == 0 &&
-      OO_PP_NOT_NULL(ts->send_prequeue) )
+      OO_PP_NOT_NULL(ts->send_prequeue) ) {
+    ci_uint64 __drain_start = oo_lat_enabled() ? oo_rdtsc() : 0;
+    CITP_STATS_NETIF_INC(ni, send_prequeue_defer_drain);
     ci_tcp_sendmsg_enqueue_prequeue(ni, ts, 0);
+    if( __drain_start )
+      OO_ADV_ACC(send_prequeue_tail_drain, oo_rdtsc() - __drain_start);
+  }
 
   pkt = PKT_CHK(ni, sendq->tail);
   if( ts->s.tx_errno == 0 &&
@@ -1068,8 +1073,13 @@ static int ci_tcp_sendmsg_enqueue(ci_netif* ni, ci_tcp_state* ts,
    * first, so that the packets we are about to enqueue cannot overtake
    * data that was queued earlier. */
   if( NI_OPTS(ni).lock_defer_skip_push && sendq == &ts->send &&
-      OO_PP_NOT_NULL(ts->send_prequeue) )
+      OO_PP_NOT_NULL(ts->send_prequeue) ) {
+    ci_uint64 __drain_start = oo_lat_enabled() ? oo_rdtsc() : 0;
+    CITP_STATS_NETIF_INC(ni, send_prequeue_defer_drain);
     ci_tcp_sendmsg_enqueue_prequeue(ni, ts, 0);
+    if( __drain_start )
+      OO_ADV_ACC(send_prequeue_drain, oo_rdtsc() - __drain_start);
+  }
 
   seq = tcp_enq_nxt(ts) + total_bytes;
 

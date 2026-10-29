@@ -978,7 +978,7 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
      * instead (same as the interrupted-by-signal fallback above).  The
      * bit stays set, so the work runs when the deferred list is purged.
      * Queued data may be delayed; measurement use only. */
-    CITP_STATS_NETIF_INC(ni, defer_work_contended_unsafe);
+    CITP_STATS_NETIF_INC(ni, defer_work_accumulated);
     ++ni->state->defer_work_count;
     if( __total ) OO_ADV_ACC(total, oo_rdtsc() - __total);
     return 0;

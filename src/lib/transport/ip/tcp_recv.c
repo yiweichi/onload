@@ -634,6 +634,7 @@ static inline int ci_tcp_recvmsg_impl(const ci_tcp_recvmsg_args* a,
   if( NI_OPTS(ni).lock_defer_skip_push &&
       OO_PP_NOT_NULL(ts->send_prequeue) &&
       ci_netif_trylock(ni) ) {
+    CITP_STATS_NETIF_INC(ni, recv_prequeue_defer_drain);
     ci_tcp_sendmsg_enqueue_prequeue_deferred(ni, ts);
     ci_netif_unlock(ni);
   }
