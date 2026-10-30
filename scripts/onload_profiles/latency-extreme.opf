@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# X-SPDX-Copyright-Text: (c) Copyright 2010-2019 Xilinx, Inc.
+
+# OpenOnload extreme low-latency profile for hard-latency applications such as
+# a low-latency trading system.  This is a more aggressive sibling of
+# "latency-best": it builds on the standard "latency" profile and favours tail
+# latency on the send/recv syscall path at the expense of throughput and
+# RX/ACK batching.
+#
+# NOTE: this profile relies on the EF_LOCK_DEFER_SKIP_PUSH / SKIP_LIMIT options
+# and the accompanying send/recv prequeue drains, which are local patches on
+# top of stock Onload.  It also sets EF_TCP_SNDBUF, which overrides any
+# per-socket SO_SNDBUF the application sets.  Do not use it on unpatched
+# Onload and take care with the send buffer semantics.
+
+# Enable spinning (and disable FASTSTART) as per the standard latency profile.
+onload_import latency
+
+# Large per-socket send buffer.  EF_TCP_SNDBUF overrides any per-socket
+# SO_SNDBUF set by the application.  Note Onload doubles the requested value
+# (mimicking Linux), so 5 MB here yields ~10 MB of internal send buffer,
+# i.e. a large sendq + prequeue credit.  A large credit lets the sender keep
+# going while the stack lock is held by another thread without blocking on a
+# full send queue.
+onload_set EF_TCP_SNDBUF 5242880
+
+# Skip the trailing poll in the poll_and_out (tx-advance) path.  This removes
+# the send-path tail latency of polling the stack after a send, at the cost of
+# deferring RX/ACK processing to a later stack access.
+onload_set EF_TX_ADVANCE_NAGLE_POLL 0
+
+# Disable branch 2 (push-forward) of ci_netif_lock_or_defer_work().  A thread
+# that finds its socket already queued for deferred work does not block on the
+# stack lock to push its own work forward; it hands the work to the lock holder
+# instead.  This removes the stack-lock wait from the send()/recv() tail.
+# Requires the send-path / recv-path prequeue drains so that deferred data
+# cannot be overtaken.
+onload_set EF_LOCK_DEFER_SKIP_PUSH 1
+
+# With such a large send buffer the per-window defer-work counter can exceed
+# the default limit (EF_DEFER_WORK_LIMIT=32) within a single lock hold, which
+# would re-introduce blocking via branch 1 of ci_netif_lock_or_defer_work().
+# Disable that abort path too so a sender never blocks on the stack lock.
+onload_set EF_LOCK_DEFER_SKIP_LIMIT 1
