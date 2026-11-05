@@ -11,7 +11,7 @@ echo "#define ONLOAD_BUILD_PROFILE \"\""
 echo "#endif"
 echo -n "#define ONLOAD_VERSION \""
 
-human_name=""
+human_name="9.2.0.43-hotfix-rc2"
 if test -f `which git`; then
   hash=`git show -s --format="format:%h %cd"  --date=short HEAD`
   echo -n $hash
