@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# X-SPDX-Copyright-Text: (c) Copyright 2010-2019 Xilinx, Inc.
+
+# Extreme latency settings with TCP send prequeue drains enabled for
+# workloads that use concurrent TCP sends.
+onload_import latency-extreme
+
+onload_set EF_TCP_LOCK_DEFER_DRAIN_ON_SEND 1
+onload_set EF_TCP_LOCK_DEFER_DRAIN_ON_RECV 1

@@ -831,6 +831,37 @@ CI_CFG_OPT("EF_TCP_LOCK_DEFER_ALWAYS", tcp_lock_defer_always, ci_uint32,
 "Intended for latency ablation experiments only.",
            , , 0, 0, 1, value)
 
+CI_CFG_OPT("EF_TCP_SEND_ADVANCE_POLL", tcp_send_advance_poll, ci_uint32,
+"Poll for network events at the end of the TCP transmit advance path "
+"(ci_tcp_tx_advance_nagle()), so that RX/ACK events are processed promptly "
+"after a send. "
+"Set to 0 to skip this trailing poll and reduce send-path tail latency, at "
+"the cost of deferring RX/ACK processing to a later stack access.",
+           , , 1, 0, 1, value)
+
+CI_CFG_OPT("EF_TCP_LOCK_DEFER_HANDOVER_CONTENDED", tcp_lock_defer_handover_contended,
+           ci_uint32,
+"When another thread has already queued this socket for deferred work, this "
+"option stops the current thread from waiting for the stack lock in order to "
+"do that work itself; the work is instead left to the thread that holds the "
+"lock.  This removes a stack-lock wait from the send() tail, but the "
+"deferred work may be delayed.",
+           , , 0, 0, 1, value)
+
+CI_CFG_OPT("EF_TCP_LOCK_DEFER_DRAIN_ON_SEND", tcp_lock_defer_drain_on_send,
+           ci_uint32,
+"Drain a TCP send prequeue before appending to the send queue.  This prevents "
+"newly sent data from overtaking data prequeued by deferred work.  This "
+"option is needed only when EF_TCP_LOCK_DEFER_HANDOVER_CONTENDED is set.",
+           , , 0, 0, 1, value)
+
+CI_CFG_OPT("EF_TCP_LOCK_DEFER_DRAIN_ON_RECV", tcp_lock_defer_drain_on_recv,
+           ci_uint32,
+"Allow receive() to drain a TCP send prequeue left by deferred work.  This is "
+"a best-effort recovery path for stranded prequeued data.  This option is "
+"needed only when EF_TCP_LOCK_DEFER_HANDOVER_CONTENDED is set.",
+           , , 0, 0, 1, value)
+
 CI_CFG_OPT("EF_UDP_SEND_UNLOCK_THRESH", udp_send_unlock_thresh, ci_uint16,
 "UDP message size below which we attempt to take the stack lock early.  "
 "Taking the lock early reduces overhead and latency slightly, but may "
