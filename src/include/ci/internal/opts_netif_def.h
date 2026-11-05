@@ -820,6 +820,17 @@ CI_CFG_OPT("EF_SEND_POLL_MAX_EVS", send_poll_max_events, ci_uint16,
 "number of events handled.",
            , , 96, 1, 65535, count)
 
+CI_CFG_OPT("EF_TCP_LOCK_DEFER_ALWAYS", tcp_lock_defer_always, ci_uint32,
+"For TCP sockets, never take the stack lock in the deferral path: the socket "
+"is always queued for the stack lock holder, which performs the deferred work "
+"when it next releases the lock.  This removes the stack-lock wait from the "
+"send() tail even when this socket is already queued by another thread.  "
+"Deferred work then only makes progress when some other thread takes and "
+"releases the stack lock, so prequeued data can be delayed for a long time "
+"and, without the send-path prequeue drain, can be overtaken by later sends.  "
+"Intended for latency ablation experiments only.",
+           , , 0, 0, 1, value)
+
 CI_CFG_OPT("EF_UDP_SEND_UNLOCK_THRESH", udp_send_unlock_thresh, ci_uint16,
 "UDP message size below which we attempt to take the stack lock early.  "
 "Taking the lock early reduces overhead and latency slightly, but may "
