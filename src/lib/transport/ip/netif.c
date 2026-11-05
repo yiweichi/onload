@@ -903,6 +903,15 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
    */
   ci_assert(!(w->sb_aflags & CI_SB_AFLAG_ORPHAN));
 
+  /* EF_TCP_LOCK_DEFER_ALWAYS: never take the stack lock on the TCP send path.
+   * Work is always left to the stack lock holder, which performs it when it
+   * next releases the lock (typically the receive thread).  Note this also
+   * disables the defer_work_limit abort path below, which would otherwise
+   * block on the lock.
+   */
+  int __defer_always = NI_OPTS(ni).tcp_lock_defer_always &&
+                       ( w->state & CI_TCP_STATE_TCP );
+
   /* EF_TCP_LOCK_DEFER_HANDOVER_CONTENDED is TCP-only: the mitigation for
    * deferred work is the TCP prequeue drain.
    */
@@ -910,7 +919,8 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
       NI_OPTS(ni).tcp_lock_defer_handover_contended &&
       ( w->state & CI_TCP_STATE_TCP );
 
-  if( ni->state->defer_work_count >= NI_OPTS(ni).defer_work_limit ) {
+  if( ni->state->defer_work_count >= NI_OPTS(ni).defer_work_limit &&
+      ! __defer_always ) {
     int rc = ci_netif_lock(ni);
     if( rc == 0 ) {
       CITP_STATS_NETIF_INC(ni, defer_work_limited);
@@ -924,7 +934,7 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
   }
 
   if( ci_bit_test_and_set(&w->sb_aflags, CI_SB_AFLAG_DEFERRED_BIT) ) {
-    if( ! __handover_contended ) {
+    if( ! __defer_always && ! __handover_contended ) {
       /* Already set.  Another thread is trying to defer some work for this
        * socket.  However, we must do **our** work in time, so let's push it
        * forward.
@@ -959,12 +969,28 @@ int ci_netif_lock_or_defer_work(ci_netif* ni, citp_waitable* w)
     }
     /* EF_TCP_LOCK_DEFER_HANDOVER_CONTENDED=1: do not block on the lock to
      * do our own work; hand it over to the lock holder instead (same as
-     * the interrupted-by-signal fallback above).  The bit stays set, so
-     * the work runs when the deferred list is purged.  Queued data may be
+     * the interrupted-by-signal fallback above).  EF_TCP_LOCK_DEFER_ALWAYS=1
+     * implies this for every contended deferral.  The bit stays set, so the
+     * work runs when the deferred list is purged.  Queued data may be
      * delayed; measurement use only. */
     CITP_STATS_NETIF_INC(ni, defer_work_accumulated);
     ++ni->state->defer_work_count;
     return 0;
+  }
+
+  if( __defer_always ) {
+    /* Queue this socket even when the stack lock is free.  Only the thread
+     * releasing the lock processes the deferred socket list. */
+    while( 1 ) {
+      ci_uint64 v = ni->state->lock.lock;
+      ci_uint64 new_v = (v & ~CI_EPLOCK_NETIF_SOCKET_LIST) | (W_ID(w) + 1);
+      w->next_id = v & CI_EPLOCK_NETIF_SOCKET_LIST;
+      if( ci_cas64u_succeed(&ni->state->lock.lock, v, new_v) ) {
+        CITP_STATS_NETIF_INC(ni, defer_work_accumulated);
+        ++ni->state->defer_work_count;
+        return 0;
+      }
+    }
   }
 
   while( 1 ) {

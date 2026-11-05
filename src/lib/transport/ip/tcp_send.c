@@ -45,8 +45,15 @@
 
 #define trylock(ni, locked)                                     \
   ((locked) || (ci_netif_trylock(ni) && ((locked) = 1)))
-#define si_trylock(ni, sinf)                    \
-  trylock((ni), (sinf)->stack_locked)
+/* EF_TCP_LOCK_DEFER_ALWAYS: never take the stack lock on the send path, even
+ * when it is free.  Every caller treats a failed trylock as "hand the data to
+ * the stack lock holder", so the send falls through to the prequeue drain
+ * paths and the work is performed when the lock is next released.
+ */
+#define si_trylock(ni, sinf)                                            \
+  ((sinf)->stack_locked ||                                              \
+   ( ! NI_OPTS(ni).tcp_lock_defer_always &&                             \
+     ci_netif_trylock(ni) && ((sinf)->stack_locked = 1)))
 
 struct tcp_send_info {
   int rc;

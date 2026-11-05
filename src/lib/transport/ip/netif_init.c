@@ -895,6 +895,8 @@ void ci_netif_config_opts_getenv(ci_netif_config_opts* opts)
     opts->tcp_send_advance_poll = atoi(s);
   if ( (s = getenv("EF_DEFER_WORK_LIMIT")) )
     opts->defer_work_limit = atoi(s);
+  if ( (s = getenv("EF_TCP_LOCK_DEFER_ALWAYS")) )
+    opts->tcp_lock_defer_always = atoi(s);
   if ( (s = getenv("EF_TCP_LOCK_DEFER_HANDOVER_CONTENDED")) )
     opts->tcp_lock_defer_handover_contended = atoi(s);
   if( (s = getenv("EF_TCP_LOCK_DEFER_DRAIN_ON_SEND")) )
